@@ -35,6 +35,9 @@ spec:
     - name: "metrics"
       protocol: TCP
       port: 8888
+  {{- if $collector.serviceAccount.create }}
+  serviceAccount: "{{ $collectorName }}-collector"
+  {{- end }}
 {{- if $collector.targetallocator }}
 {{- if $collector.targetallocator.enabled }}
   targetAllocator:
@@ -45,6 +48,9 @@ spec:
     {{- if $collector.targetallocator.resources }}
     resources:
       {{- toYaml $collector.targetallocator.resources | nindent 6 }}
+    {{- end }}
+    {{- if $collector.targetallocator.serviceAccount.create }}
+    serviceAccount: {{ $collectorName }}-targetallocator
     {{- end }}
     {{- if $collector.targetallocator.filterStrategy }}
     filterStrategy: {{ $collector.targetallocator.filterStrategy }}
@@ -60,6 +66,10 @@ spec:
   env:
   {{- if $collector.env }}
     {{- toYaml $collector.env | nindent 4}}
+  {{- end }}
+  {{- if and ($collector.useGOMEMLIMIT) (((($collector.resources).limits).memory)) }}
+    - name: GOMEMLIMIT
+      value: {{ include "kube-otel-stack.gomemlimit" $collector.resources.limits.memory | quote }}
   {{- end }}
     - name: OTEL_K8S_NODE_NAME
       valueFrom:
@@ -94,31 +104,26 @@ spec:
       {{- toYaml $collector.config.extensions | nindent 6 }}
     receivers:
       {{- toYaml $collector.config.receivers | nindent 6 }}
+      {{- if or $collector.scrape_configs_file $collector.targetallocator }}
       prometheus:
         config:
+          {{- if $collector.scrape_configs_file }}
           scrape_configs:
-          {{ if $collector.scrape_configs_file }}
           {{ tpl ($.Files.Get $collector.scrape_configs_file) $ | nindent 10 }}
-          {{ end }}
-          {{- if (not (eq $collector.mode "statefulset")) }}
-          - job_name: otel-collector
-            scrape_interval: 5s
-            static_configs:
-            - labels:
-                collector_name: ${KUBE_POD_NAME}
-              targets:
-                - 0.0.0.0:8888
-          {{ end }}
+        {{- else }}
+          scrape_configs: []
+        {{- end }}
         {{- if $collector.targetallocator }}
         {{- if $collector.targetallocator.enabled }}
         target_allocator:
           endpoint: http://{{ $collectorName }}-targetallocator:80
           interval: 30s
-          collector_id: ${POD_NAME}
+          collector_id: ${OTEL_K8S_POD_NAME}
           http_sd_config:
             refresh_interval: 60s
         {{ end }}
         {{ end }}
+      {{ end }}
     processors:
       {{- toYaml $collector.config.processors | nindent 6 }}
     service:
@@ -203,9 +208,47 @@ subjects:
   namespace: {{ $.Release.Namespace }}
 {{- if eq $collector.mode "statefulset" }}
 - kind: ServiceAccount
-  name: {{ $collectorName }}-targetallocator
+  name: "{{ $collectorName }}-targetallocator"
   namespace: {{ $.Release.Namespace }}
 {{- end }}
 ---
+{{- if $collector.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "{{ $collectorName }}-collector"
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "kube-otel-stack.labels" $ | indent 4 }}
+  {{- with $collector.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4}}
+  {{- end }}
+{{- with $collector.serviceAccount.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+---
+{{- end }}
+{{- if $collector.targetallocator }}
+{{- if $collector.targetallocator.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "{{ $collectorName }}-targetallocator"
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "kube-otel-stack.labels" $ | indent 4 }}
+  {{- with $collector.targetallocator.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4}}
+  {{- end }}
+{{- with $collector.targetallocator.serviceAccount.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+---
+{{- end }}
 {{ end }}
 {{- end }}

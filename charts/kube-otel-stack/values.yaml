@@ -66,6 +66,7 @@ tracesCollector:
     minReplicas: 3
     maxReplicas: 10
     targetMemoryUtilization: 70
+  useGOMEMLIMIT: true
   resources:
     limits:
       cpu: 250m
@@ -88,6 +89,10 @@ tracesCollector:
           http:
             endpoint: "0.0.0.0:4318"
     processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
       # We recommend use of the batch processor.  We recommend the settings
       # below for traces.
       #
@@ -209,6 +214,7 @@ tracesCollector:
         traces:
           receivers: [otlp]
           processors:
+            - memory_limiter
             - resource
             - resourcedetection/env
             - k8sattributes
@@ -221,8 +227,12 @@ metricsCollector:
   clusterName: ""
   image: otel/opentelemetry-collector-contrib:0.88.0
   enabled: true
+  serviceAccount: 
+    create: true
+    annotations: {}
+    imagePullSecrets: []
   mode: statefulset
-  replicas: 3
+  replicas: 4
   hpa:
     enabled: false
     minReplicas: 3
@@ -230,6 +240,10 @@ metricsCollector:
     targetMemoryUtilization: 70
   targetallocator:
     enabled: true
+    serviceAccount:
+      create: true
+      annotations: {}
+      imagePullSecrets: []
     allocationStrategy: "consistent-hashing"
     replicas: 2
     image: ghcr.io/open-telemetry/opentelemetry-operator/target-allocator:0.88.0
@@ -245,6 +259,7 @@ metricsCollector:
     #     memory: 250Mi
   # No need for a scrape config when using prometheusCRs
   scrape_configs_file: "scrape_configs.yaml"
+  useGOMEMLIMIT: true
   resources:
     limits:
       cpu: 250m
@@ -252,12 +267,6 @@ metricsCollector:
     requests:
       cpu: 250m
       memory: 500Mi
-  env:
-    - name: LS_TOKEN
-      valueFrom:
-        secretKeyRef:
-          key: LS_TOKEN
-          name: otel-collector-secret
   config:
     extensions:
       health_check:
@@ -273,6 +282,10 @@ metricsCollector:
           grpc:
             endpoint: "0.0.0.0:4317"
     processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
       metricstransform/k8sservicename:
         transforms:
           - include: kube_service_info
@@ -317,18 +330,24 @@ metricsCollector:
         send_batch_max_size: 1500
       resource:
         attributes:
-          - key: lightstep.helm_chart
+          - key: jnj.helm_chart
             value: kube-otel-stack
             action: insert
           - key: job
             from_attribute: service.name
             action: insert
+      transform:
+        metric_statements:
+          - context: datapoint
+            statements:
+              - set(attributes["cluster"], resource.attributes["k8s.cluster.name"]) where attributes["cluster"] == nil
+              - set(attributes["namespace"], resource.attributes["k8s.namespace.name"]) where attributes["namespace"] == nil
+              - set(attributes["container"], resource.attributes["k8s.container.name"]) where attributes["container"] == nil
+              - set(attributes["pod"], resource.attributes["k8s.pod.name"]) where attributes["pod"] == nil
 
     exporters:
-      otlp:
-        endpoint: ingest.lightstep.com:443
-        headers:
-          "lightstep-access-token": "${LS_TOKEN}"
+      debug: {}
+      prometheusremotewrite: {}
 
     service:
       extensions:
@@ -337,32 +356,33 @@ metricsCollector:
         metrics:
           receivers: [prometheus, otlp]
           processors:
+            - memory_limiter
             - resource
             - resourcedetection/env
             - k8sattributes
             - metricstransform/k8sservicename
+            - transform
             - batch
-          exporters: [otlp]
+          exporters: [debug, prometheusremotewrite]
 
 logsCollector:
   name: logs
   clusterName: ""
   image: otel/opentelemetry-collector-contrib:0.88.0
   enabled: false
+  serviceAccount: 
+    create: true
+    annotations: {}
+    imagePullSecrets: []
   mode: daemonset
+  useGOMEMLIMIT: true
   resources:
     limits:
       cpu: 250m
-      memory: 250Mi
+      memory: 375Mi
     requests:
       cpu: 250m
-      memory: 250Mi
-  env:
-    - name: LS_TOKEN
-      valueFrom:
-        secretKeyRef:
-          key: LS_TOKEN
-          name: otel-collector-secret
+      memory: 375Mi
   volumeMounts:
     - mountPath: /var/log
       name: varlog
@@ -454,6 +474,10 @@ logsCollector:
             from: attributes.uid
             to: resource["k8s.pod.uid"]
     processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
       resourcedetection/env:
         detectors: [env]
         timeout: 2s
@@ -462,15 +486,6 @@ logsCollector:
         send_batch_size: 1000
         timeout: 1s
         send_batch_max_size: 1500
-      metricstransform/k8sservicename:
-        transforms:
-          - include: kube_service_info
-            match_type: strict
-            action: update
-            operations:
-              - action: update_label
-                label: service
-                new_label: k8s.service.name
       k8sattributes:
         passthrough: false
         pod_association:
@@ -499,36 +514,25 @@ logsCollector:
             - container.image.name
       resource:
         attributes:
-          - key: lightstep.helm_chart
+          - key: jnj.helm_chart
             value: kube-otel-stack
             action: insert
 
     exporters:
-      otlp:
-        endpoint: ingest.lightstep.com:443
-        headers:
-          "lightstep-access-token": "${LS_TOKEN}"
+      debug: {}
+      kafka: {}
 
     service:
       pipelines:
         logs:
           receivers: [k8s_events, filelog]
           processors:
+            - memory_limiter
             - resource
             - resourcedetection/env
             - k8sattributes
             - batch
-          exporters: [otlp]
-        # include self-scraped metrics, see `templates/collector.yaml` for `prometheus` receiver definition
-        metrics:
-          receivers: [prometheus]
-          processors:
-            - resource
-            - resourcedetection/env
-            - k8sattributes
-            - metricstransform/k8sservicename
-            - batch
-          exporters: [otlp]
+          exporters: [debug, kafka]
 
 ## Component scraping the kube api server
 ##

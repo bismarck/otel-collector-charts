@@ -93,3 +93,42 @@ heritage: {{ $.Release.Service | quote }}
   {{- $userValue := index . 3 -}}
   {{- include "kube-otel-stack.kubeVersionDefaultValue" (list $values ">= 1.23-0" $insecure $secure $userValue) -}}
 {{- end -}}
+
+{{/*
+  This helper converts the input value of memory to Bytes.
+  Input needs to be a valid value as supported by k8s memory resource field.
+ */}}
+{{- define "kube-otel-stack.convertMemToBytes" }}
+  {{- $mem := lower . -}}
+  {{- if hasSuffix "e" $mem -}}
+    {{- $mem = mulf (trimSuffix "e" $mem | float64) 1e18 -}}
+  {{- else if hasSuffix "ei" $mem -}}
+    {{- $mem = mulf (trimSuffix "e" $mem | float64) 0x1p60 -}}
+  {{- else if hasSuffix "p" $mem -}}
+    {{- $mem = mulf (trimSuffix "p" $mem | float64) 1e15 -}}
+  {{- else if hasSuffix "pi" $mem -}}
+    {{- $mem = mulf (trimSuffix "pi" $mem | float64) 0x1p50 -}}
+  {{- else if hasSuffix "t" $mem -}}
+    {{- $mem = mulf (trimSuffix "t" $mem | float64) 1e12 -}}
+  {{- else if hasSuffix "ti" $mem -}}
+    {{- $mem = mulf (trimSuffix "ti" $mem | float64) 0x1p40 -}}
+  {{- else if hasSuffix "g" $mem -}}
+    {{- $mem = mulf (trimSuffix "g" $mem | float64) 1e9 -}}
+  {{- else if hasSuffix "gi" $mem -}}
+    {{- $mem = mulf (trimSuffix "gi" $mem | float64) 0x1p30 -}}
+  {{- else if hasSuffix "m" $mem -}}
+    {{- $mem = mulf (trimSuffix "m" $mem | float64) 1e6 -}}
+  {{- else if hasSuffix "mi" $mem -}}
+    {{- $mem = mulf (trimSuffix "mi" $mem | float64) 0x1p20 -}}
+  {{- else if hasSuffix "k" $mem -}}
+    {{- $mem = mulf (trimSuffix "k" $mem | float64) 1e3 -}}
+  {{- else if hasSuffix "ki" $mem -}}
+    {{- $mem = mulf (trimSuffix "ki" $mem | float64) 0x1p10 -}}
+  {{- end }}
+{{- $mem }}
+{{- end }}
+
+{{- define "kube-otel-stack.gomemlimit" }}
+{{- $memlimitBytes := include "kube-otel-stack.convertMemToBytes" . | mulf 0.8 -}}
+{{- printf "%dMiB" (divf $memlimitBytes 0x1p20 | floor | int64) -}}
+{{- end }}
